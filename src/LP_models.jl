@@ -1,0 +1,400 @@
+#=
+Solves the IO/SU RCOT, NEO, and similar models as an LP. GLPK is used as solver; others may be used as well, but may require a code adjustment.
+
+<type> defines if the primal or dual should be solved explicitly.
+<format> denotes if absolute or relative RCOT formulation is to be used.
+<data> denotes the data to be used; either the SUT or from a construct.
+<surplus> defines for joint production formulation if a commodity surplus may exist or not; only to be used in primal.
+
+---
+
+# usage as for example:
+
+include("RCOT_model.jl")
+
+### run the primal IO-RCOT model in its absolute form using the data contained in <io_rcot_data>
+io_rcot_model = io_rcot("primal", "abs", io_rcot_data)
+
+### show the mathematical model
+latex_formulation(io_rcot_model)
+
+### show a solution summary of the solved model
+solution_summary(io_rcot_model)
+
+...
+
+=#
+
+using LinearAlgebra
+
+using ..SUT # from SUT_structure.jl
+using ..Constructs # from Constructs.jl
+using ..Model_data # from Model_data.jl
+# and calls functions from Auxiliary.jl
+# and requires an installed solver (GLPK and Ipopt)
+
+################################################################################
+# RCOT
+################################################################################
+function su_rcot(type::String, format::String, data::SUT.structure; surplus::Bool=true)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    if type == "primal" && format == "abs"
+        try
+            @variable(model, z_star[1:size(data.V,1)] >= 0, base_name = "z*")
+            @objective(model, Min, sum(data.pii'*data.F*z_star))
+            if surplus
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .>= data.e)
+            else
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .== data.e)
+            end
+            @constraint(model, zero_profit, data.F*z_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch
+            rethrow()
+        end
+
+    elseif type == "primal" && format == "rel"
+        try
+            @variable(model, g_star[1:size(data.C,2)] >= 0, base_name = "g*")
+            @objective(model, Min, sum(data.pii'*data.S*g_star))
+            if surplus
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .>= data.e)
+            else
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .== data.e)
+            end
+            @constraint(model, zero_profit, data.S*g_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch e
+            println("The relative primal SU-RCOT can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    
+    elseif type == "dual" && format == "abs"
+        try
+            @variable(model, p[1:size(data.V,2)] >= 0)
+            @variable(model, r[1:size(data.F,1)] >= 0)
+            @objective(model, Max, sum(p'*data.e - r'*data.ϕ))
+            @constraint(model, factor_costs, (data.V'-data.U)'*(p) - data.F'*r .<= data.F'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch
+            rethrow()
+        end
+    
+    elseif type == "dual" && format == "rel"
+        try
+            @variable(model, p[1:size(data.C,1)] >= 0)
+            @variable(model, r[1:size(data.S,1)] >= 0)
+            @objective(model, Max, sum(p'*data.e - r'*data.ϕ))
+            @constraint(model, factor_costs, (data.C-data.B)'*(p) - data.S'*r .<= data.S'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch e
+            println("The relative primal SU-RCOT can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    end
+
+    return model
+end
+
+
+function io_rcot(type::String, format::String, data::Constructs.construct)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    try
+        if type == "primal" && format == "abs"
+            @variable(model, s_star[1:size(data.Z,2)] >= 0, base_name = "s*")
+            @objective(model, Min, sum(data.pii'*data.G*s_star))
+            @constraint(model, mass_balance, (data.xhat-data.Z)*(s_star) .>= data.y)
+            @constraint(model, zero_profit, data.G*s_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+
+        elseif type == "primal" && format == "rel"
+            @variable(model, x_star[1:size(data.A,2)] >= 0, base_name = "x*")
+            @objective(model, Min, sum(data.pii'*data.R*x_star))
+            @constraint(model, mass_balance, (data.I_mod-data.A)*(x_star) .>= data.y)
+            @constraint(model, zero_profit, data.R*x_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        
+        elseif type == "dual" && format == "abs"
+            @variable(model, p[1:size(data.Z,1)] >= 0)
+            @variable(model, r[1:size(data.G,1)] >= 0)
+            @objective(model, Max, sum(p'*data.y - r'*data.ϕ))
+            @constraint(model, factor_costs, (data.xhat-data.Z)'*(p) - data.G'*r .<= data.G'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        
+        elseif type == "dual" && format == "rel"
+            @variable(model, p[1:size(data.A,1)] >= 0)
+            @variable(model, r[1:size(data.R,1)] >= 0)
+            @objective(model, Max, sum(p'*data.y - r'*data.ϕ))
+            @constraint(model, factor_costs, (data.I_mod-data.A)'*(p) - data.R'*r .<= data.R'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        end
+
+        return model
+
+    catch e
+        println("Ensure that the right model and construct were chosen, given the dimensions and units of the underlying data.")
+    end
+
+end
+
+################################################################################
+# NEO
+################################################################################
+
+function su_neo(type::String, format::String, data::SUT.structure; surplus::Bool=true)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    if type == "primal" && format == "abs"
+        try
+            @variable(model, z_star[1:size(data.V,1)] >= 0, base_name = "z*")
+            @variable(model, c >= 0)
+            @objective(model, Max, c)
+            if surplus
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .>= c.*data.e)
+            else
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .== c.*data.e)
+            end
+            @constraint(model, zero_profit, data.F*z_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch
+            rethrow()
+        end
+
+    elseif type == "primal" && format == "rel"
+        try
+            @variable(model, g_star[1:size(data.C,2)] >= 0, base_name = "g*")
+            @variable(model, c >= 0)
+            @objective(model, Max, c)
+            if surplus
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .>= c.*data.e)
+            else
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .== c.*data.e)
+            end
+            @constraint(model, zero_profit, data.S*g_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch e
+            println("The relative primal SU-NEO can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    
+    elseif type == "dual" && format == "abs"
+        try
+            @variable(model, p[1:size(data.V,2)] >= 0)
+            @variable(model, pii[1:size(data.F,1)] >= 0)
+            @objective(model, Min, sum(pii'*data.ϕ))
+            @constraint(model, factor_costs, (data.V'-data.U)'*(p) .<= data.F'*pii)
+            @constraint(model, income, (p'*data.e) .== sum(data.e))# or .==1?
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch
+            rethrow()
+        end
+    
+    elseif type == "dual" && format == "rel"
+        try
+            @variable(model, p[1:size(data.C,1)] >= 0)
+            @variable(model, pii[1:size(data.S,1)] >= 0)
+            @objective(model, Max, sum(pii'*data.ϕ))
+            @constraint(model, factor_costs, (data.C-data.B)'*(p) .<= data.S'*pii)
+            @constraint(model, income, (p'*data.e) .== sum(data.e))# or .==1?
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch e
+            println("The relative primal SU-NEO can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    end
+
+    return model
+end
+
+
+function io_neo(type::String, format::String, data::Constructs.construct)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    try
+        if type == "primal" && format == "abs"
+            @variable(model, s_star[1:size(data.Z,2)] >= 0, base_name = "s*")
+            @variable(model, c >= 0)
+            @objective(model, Max, c)
+            @constraint(model, mass_balance, (data.xhat-data.Z)*(s_star) .>= c.*data.y)
+            @constraint(model, zero_profit, data.G*s_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+
+        elseif type == "primal" && format == "rel"
+            @variable(model, x_star[1:size(data.A,2)] >= 0, base_name = "x*")
+            @variable(model, c >= 0)
+            @objective(model, Max, c)
+            @constraint(model, mass_balance, (data.I_mod-data.A)*(x_star) .>= c.*data.y)
+            @constraint(model, zero_profit, data.R*x_star .<= data.ϕ)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        
+        elseif type == "dual" && format == "abs"
+            @variable(model, p[1:size(data.Z,1)] >= 0)
+            @variable(model, pii[1:size(data.G,1)] >= 0)
+            @objective(model, Min, sum(p'*data.y - pii'*data.ϕ))
+            @constraint(model, factor_costs, (data.xhat-data.Z)'*(p) - data.G'*r .<= data.G'*data.pii)
+            @constraint(model, income, (p'*data.y) .== sum(data.y))# or .==1?
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        
+        elseif type == "dual" && format == "rel"
+            @variable(model, p[1:size(data.A,1)] >= 0)
+            @variable(model, pii[1:size(data.R,1)] >= 0)
+            @objective(model, Min, sum(p'*data.y - pii'*data.ϕ))
+            @constraint(model, factor_costs, (data.I_mod-data.A)'*(p) .<= data.R'*pii)
+            @constraint(model, income, (p'*data.y) .== sum(data.y))# or .==1?
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        end
+
+        return model
+
+    catch e
+        println("Ensure that the right model and construct were chosen, given the dimensions and units of the underlying data.")
+    end
+
+end
+
+################################################################################
+# DOSSO
+################################################################################
+function su_dosso(type::String, format::String, data::SUT.structure; surplus::Bool=true)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    if type == "primal" && format == "abs"
+        try
+            @variable(model, z_star[1:size(data.V,1)] >= 0, base_name = "z*")
+            @objective(model, Min, sum(data.pii'*data.F*z_star))
+            if surplus
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .>= data.e)
+            else
+                @constraint(model, mass_balance, (data.V'-data.U)*(z_star) .== data.e)
+            end
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch
+            rethrow()
+        end
+
+    elseif type == "primal" && format == "rel"
+        try
+            @variable(model, g_star[1:size(data.C,2)] >= 0, base_name = "g*")
+            @objective(model, Min, sum(data.pii'*data.S*g_star))
+            if surplus
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .>= data.e)
+            else
+                @constraint(model, mass_balance, (data.C-data.B)*(g_star) .== data.e)
+            end
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        catch e
+            println("The relative primal SU-RCOT can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    
+    elseif type == "dual" && format == "abs"
+        try
+            @variable(model, p[1:size(data.V,2)] >= 0)
+            @objective(model, Max, sum(p'*data.e))
+            @constraint(model, factor_costs, (data.V'-data.U)'*(p) .<= data.F'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch
+            rethrow()
+        end
+    
+    elseif type == "dual" && format == "rel"
+        try
+            @variable(model, p[1:size(data.C,1)] >= 0)
+            @objective(model, Max, sum(p'*data.e))
+            @constraint(model, factor_costs, (data.C-data.B)'*(p) .<= data.S'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        catch e
+            println("The relative primal SU-RCOT can only be applied to monetary data. Make also sure that no other error persists.")
+        end
+    end
+
+    return model
+end
+
+function io_dosso(type::String, format::String, data::Constructs.construct)
+    # Define the optimisation model
+    model = Model(GLPK.Optimizer)
+
+    try
+        if type == "primal" && format == "abs"
+            @variable(model, s_star[1:size(data.Z,2)] >= 0, base_name = "s*")
+            @objective(model, Min, sum(data.pii'*data.G*s_star))
+            @constraint(model, mass_balance, (data.xhat-data.Z)*(s_star) .>= data.y)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+
+        elseif type == "primal" && format == "rel"
+            @variable(model, x_star[1:size(data.A,2)] >= 0, base_name = "x*")
+            @objective(model, Min, sum(data.pii'*data.R*x_star))
+            @constraint(model, mass_balance, (data.I_mod-data.A)*(x_star) .>= data.y)
+            optimize!(model)
+            model_solution(model)
+            show_primal_lhs(model)
+        
+        elseif type == "dual" && format == "abs"
+            @variable(model, p[1:size(data.Z,1)] >= 0)
+            @objective(model, Max, sum(p'*data.y))
+            @constraint(model, factor_costs, (data.xhat-data.Z)'*(p) .<= data.G'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        
+        elseif type == "dual" && format == "rel"
+            @variable(model, p[1:size(data.A,1)] >= 0)
+            @objective(model, Max, sum(p'*data.y))
+            @constraint(model, factor_costs, (data.I_mod-data.A)'*(p) .<= data.R'*data.pii)
+            optimize!(model)
+            model_solution(model)
+            show_dual_lhs(model)
+        end
+
+        return model
+
+    catch e
+        println("Ensure that the right model and construct were chosen, given the dimensions and units of the underlying data.")
+    end
+
+end

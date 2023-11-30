@@ -1,0 +1,34 @@
+#Ignore the following files
+
+.ipynb_checkpoints
+
+.DS_Store
+
+pycache
+
+*.db
+
+*.pytest_cache
+
+#*.log
+
+#*.jpeg
+
+#*.xlsx
+
+*.zip
+
+*.json
+
+#ignore ALL files in ANY directory named
+
+#**/concordances/
+
+**/IOT_2022_pxp/
+
+**/processed/
+
+**/raw/
+
+**/exio3/
+
